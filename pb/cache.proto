@@ -1,0 +1,54 @@
+syntax = "proto3";
+package pb;
+option go_package=".";
+
+message GetRequest{
+    string groupName=1;
+    string key=2;
+}
+
+message SetRequest{
+    string groupName=1;
+    string key=2;
+    bytes value=3;
+}
+
+message DeleteRequest{
+    string groupName=1;
+    string key=2;
+}
+
+message AddGroupRequest{
+    string groupName=1;
+}
+
+message GetResponse{
+    bytes value=1;
+    bool flag=2;
+}
+
+message SetResponse{
+    bool flag=1;
+}
+
+message DeleteResponse{
+    bool flag=1;
+}
+
+message AddGroupResponse{
+    bool flag=1;
+}
+
+service CacheService{
+    rpc Get(GetRequest) returns (GetResponse){}
+    rpc Set(SetRequest) returns (SetResponse){}
+    rpc Delete(DeleteRequest) returns (DeleteResponse){}
+    rpc AddGroup(AddGroupRequest) returns (AddGroupResponse){}
+}
+
+service ProxyService{
+    rpc Get(GetRequest) returns (GetResponse){}
+    rpc Set(SetRequest) returns (SetResponse){}
+    rpc Delete(DeleteRequest) returns (DeleteResponse){}
+    rpc AddGroup(AddGroupRequest) returns (AddGroupResponse){}
+}
