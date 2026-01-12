@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ func GetEtcdClient() (*clientv3.Client, error) {
 			DialTimeout: 5 * time.Second,
 		})
 		if err != nil {
+			log.Printf("Failed to connect to etcd: %v", err)
 			panic(err)
 		}
 	})

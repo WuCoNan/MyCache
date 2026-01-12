@@ -26,7 +26,7 @@ type proxyServer struct {
 	connNum         int
 	consHash        *consistenthash.Map
 	cacheNodeNum    int
-	cacheNodeAddrs  []string
+	cacheNodeAddrs  map[string]struct{}
 	pb.UnimplementedProxyServiceServer
 }
 
@@ -37,7 +37,7 @@ func NewProxyServer(addr string, cacheSeriveName string, connNum int) *proxyServ
 		connNum:         connNum,
 		consHash:        consistenthash.New(50, nil),
 		cacheNodeNum:    0,
-		cacheNodeAddrs:  make([]string, 0),
+		cacheNodeAddrs:  make(map[string]struct{}),
 	}
 
 	return ps
@@ -46,6 +46,7 @@ func NewProxyServer(addr string, cacheSeriveName string, connNum int) *proxyServ
 func (ps *proxyServer) Start() error {
 	lis, err := net.Listen("tcp", ps.addr)
 	if err != nil {
+		log.Printf("Failed to listen on %s: %v", ps.addr, err)
 		return err
 	}
 	ps.startDiscovery()
@@ -88,7 +89,7 @@ func (ps *proxyServer) watchService() {
 		return
 	}
 
-	rch := etcdClient.Watch(context.Background(), "/services/"+ps.cacheSeriveName+"/", clientv3.WithPrefix())
+	rch := etcdClient.Watch(context.Background(), "/services/"+ps.cacheSeriveName+"/", clientv3.WithPrefix(), clientv3.WithPrevKV())
 	for wresp := range rch {
 		for _, ev := range wresp.Events {
 			switch ev.Type {
@@ -96,7 +97,8 @@ func (ps *proxyServer) watchService() {
 				log.Printf("New service added: %s at %s", string(ev.Kv.Key), string(ev.Kv.Value))
 				ps.createConns(string(ev.Kv.Value))
 			case clientv3.EventTypeDelete:
-				log.Printf("Service removed: %s", string(ev.Kv.Key))
+				log.Printf("Service removed: %s value: %s", string(ev.Kv.Key), string(ev.PrevKv.Value))
+				ps.releaseConns(string(ev.PrevKv.Value))
 				// Handle service removal if necessary
 			}
 		}
@@ -109,7 +111,7 @@ func (ps *proxyServer) createConns(addr string) {
 	} else {
 		ps.consHash.Add(string(addr))
 		ps.cacheNodeNum++
-		ps.cacheNodeAddrs = append(ps.cacheNodeAddrs, addr)
+		ps.cacheNodeAddrs[addr] = struct{}{}
 		for i := 0; i < ps.connNum; i++ {
 			conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 			if err != nil {
@@ -124,7 +126,22 @@ func (ps *proxyServer) createConns(addr string) {
 	}
 }
 
+func (ps *proxyServer) releaseConns(addr string) {
+	if ch, ok := ps.connPool.Load(addr); ok {
+		close(ch.(chan *clientConn))
+		ps.connPool.Delete(addr)
+		delete(ps.cacheNodeAddrs, addr)
+		ps.cacheNodeNum--
+
+		ps.consHash = consistenthash.New(50, nil)
+		for addr := range ps.cacheNodeAddrs {
+			ps.consHash.Add(string(addr))
+		}
+	}
+	log.Printf("Released connections to %s", addr)
+}
 func (ps *proxyServer) cachePicker(key string) string {
+	log.Printf("Picking cache node for key: %s to %s", key, ps.consHash.Get(key))
 	return ps.consHash.Get(key)
 }
 
@@ -183,10 +200,15 @@ func (ps *proxyServer) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.D
 
 func (ps *proxyServer) AddGroup(ctx context.Context, req *pb.AddGroupRequest) (*pb.AddGroupResponse, error) {
 	flagChList := make([]chan bool, ps.cacheNodeNum)
+	addrs := make([]string, 0, ps.cacheNodeNum)
+	for addr := range ps.cacheNodeAddrs {
+		addrs = append(addrs, addr)
+	}
 	for i := 0; i < ps.cacheNodeNum; i++ {
 		flagChList[i] = make(chan bool)
-		go func() {
-			addr := ps.cacheNodeAddrs[i]
+
+		go func(i int) {
+			addr := addrs[i]
 			cc := ps.getClientConn(addr)
 			if cc == nil {
 				log.Printf("No client connection available for address: %s", addr)
@@ -201,7 +223,7 @@ func (ps *proxyServer) AddGroup(ctx context.Context, req *pb.AddGroupRequest) (*
 				return
 			}
 			flagChList[i] <- resp.GetFlag()
-		}()
+		}(i)
 	}
 
 	finalFlag := true

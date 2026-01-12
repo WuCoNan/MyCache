@@ -2,6 +2,7 @@ package cacheserver
 
 import (
 	"context"
+	"log"
 	"net"
 
 	"github.com/WuCoNan/MyCache/etcd"
@@ -85,6 +86,7 @@ func (cs *cacheServer) Start() error {
 
 	go cs.Register()
 
+	log.Printf("Cache server %s started at %s", cs.nodeId, cs.addr)
 	if err := s.Serve(listen); err != nil {
 		return err
 	}
@@ -96,28 +98,35 @@ func (cs *cacheServer) Stop() {
 }
 
 func (cs *cacheServer) Register() error {
+	log.Printf("Registering cache server %s with etcd", cs.nodeId)
 	etcdClient, err := etcd.GetEtcdClient()
+
 	if err != nil {
+		log.Printf("Failed to get etcd client: %v", err)
 		return err
 	}
 	resp, err := etcdClient.Grant(context.TODO(), 5)
 	if err != nil {
+		log.Printf("Failed to grant lease: %v", err)
 		return err
 	}
 	_, err = etcdClient.Put(context.TODO(), "/services/"+cs.serviceName+"/"+cs.nodeId, cs.addr, clientv3.WithLease(resp.ID))
 
 	if err != nil {
+		log.Printf("Failed to register service with etcd: %v", err)
 		return err
 	}
 
 	ch, err := etcdClient.KeepAlive(context.TODO(), resp.ID)
 	if err != nil {
+		log.Printf("Failed to set up keep-alive: %v", err)
 		return err
 	}
 	go func() {
 		for {
 			select {
 			case <-ch:
+				//log.Printf("Cache server %s sent keep-alive", cs.nodeId)
 			case <-cs.stop:
 				return
 			}
